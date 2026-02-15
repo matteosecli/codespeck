@@ -51,13 +51,13 @@ else
 fi
 
 # Determine OS and ARCH
-sedi=(-i)
+sedi="-i"
 if [ -z "${OSTYPE:-}" ]; then
     OSTYPE="$(uname -s | tr '[:upper:]' '[:lower:]')"
 fi
 case "$OSTYPE" in
   linux*)   CODE_OS="linux";  CODE_CLI_OS="alpine"; JQ_OS="linux";              ;;
-  darwin*)  CODE_OS="darwin"; CODE_CLI_OS="darwin"; JQ_OS="macos"; sedi=(-i "") ;;
+  darwin*)  CODE_OS="darwin"; CODE_CLI_OS="darwin"; JQ_OS="macos"; sedi="-i ''" ;;
   *) echo >&2 "error: OS ($OSTYPE) is not supported"; exit 1 ;;
 esac
 
@@ -166,7 +166,7 @@ fi
 # Patch workbench.js
 WORKBENCH_JS="${CODE_SERVER_WEB_DIR}/out/vs/code/browser/workbench/workbench.js"
 if [ -f "$WORKBENCH_JS" ]; then
-    sed "${sedi[@]}" 's/default:"welcomePage"/default:"readme"/g' "$WORKBENCH_JS"
+    sed $sedi 's/default:"welcomePage"/default:"readme"/g' "$WORKBENCH_JS"
     echo "Workbench patched."
 fi
 
