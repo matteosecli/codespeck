@@ -1,0 +1,181 @@
+#!/bin/sh
+
+# Extended codespeck script to install VS Code Web with devcontainer support
+set -eu
+
+# Default values
+FLAVOR="CODE"  # CODE or CODIUM
+DEVCONTAINER_PATH=""
+INSTALL_ONLY=0
+SERVE=0
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case $1 in
+        --flavor)
+            FLAVOR=$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]')
+            shift 2
+            ;;
+        --devcontainer)
+            DEVCONTAINER_PATH="$2"
+            shift 2
+            ;;
+        --install-only)
+            INSTALL_ONLY=1
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--flavor CODE|CODIUM] [--devcontainer PATH] [--install-only] [code-server args...]"
+            exit 0
+            ;;
+        *)
+            # Remaining args are for code-server
+            break
+            ;;
+    esac
+done
+
+CODE_SERVER_ARGS="$@"
+
+# Set paths and URLs based on flavor
+if [ "$FLAVOR" = "CODE" ]; then
+    BASE_DIR="$HOME/.vscode"
+    SERVER_URL_BASE="https://update.code.visualstudio.com"
+    API_URL="${SERVER_URL_BASE}/api"
+elif [ "$FLAVOR" = "CODIUM" ]; then
+    BASE_DIR="$HOME/.vscodium"
+    API_URL="https://api.github.com/repos/VSCodium/vscodium"
+else
+    echo "Unsupported flavor: $FLAVOR"
+    exit 1
+fi
+
+# Determine OS and ARCH
+if [ -z "${OSTYPE:-}" ]; then
+    OSTYPE="$(uname -s | tr '[:upper:]' '[:lower:]')"
+fi
+case "$OSTYPE" in
+  linux*)   CODE_OS="linux";  CODE_CLI_OS="alpine"; JQ_OS="linux"; alias sedi='sed -i'    ;;
+  darwin*)  CODE_OS="darwin"; CODE_CLI_OS="darwin"; JQ_OS="macos"; alias sedi='sed -i ""' ;;
+  *) echo >&2 "error: OS ($OSTYPE) is not supported"; exit 1 ;;
+esac
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+    amd64|x86_64)        CODE_ARCH="x64"  ; JQ_ARCH="amd64" ;;
+    arm64|aarch64|armv8) CODE_ARCH="arm64"; JQ_ARCH="arm64" ;;
+    armv6|armv7)         CODE_ARCH="armhf"; JQ_ARCH="armhf" ;;
+    *) echo >&2 "error: architecture ($ARCH) is not supported"; exit 1 ;;
+esac
+
+if [ "${CODE_CLI_OS}" = "darwin" ] && [ "${CODE_ARCH}" = "x64" ]; then
+    CODE_PLATFORM="${CODE_CLI_OS}"
+    CODE_CLI_PLATFORM="${CODE_CLI_OS}"
+else
+    CODE_PLATFORM="${CODE_OS}-${CODE_ARCH}"
+    CODE_CLI_PLATFORM="${CODE_CLI_OS}-${CODE_ARCH}"
+fi
+
+# For CODIUM, adjust platform
+if [ "$FLAVOR" = "CODIUM" ]; then
+    CODE_PLATFORM="${CODE_OS}-${CODE_ARCH}"
+    CODE_CLI_PLATFORM="${CODE_OS}-${CODE_ARCH}"
+fi
+
+TMP_FILES=""
+cleanup() {
+    rm -f ${TMP_FILES}
+}
+trap cleanup EXIT
+
+downloadArchiveToDir() {
+    FILE_URL=$1
+    DEST_DIR=$2
+    EXTRA_ARGS=${3:-}
+    mkdir -p ${DEST_DIR}
+    VSC_TMP_FILE=$(mktemp -t vsc_dl.XXXXXX)
+    TMP_FILES="${TMP_FILES} ${VSC_TMP_FILE}"
+    curl -sSL "${FILE_URL}" -o ${VSC_TMP_FILE}
+    tar -xpf ${VSC_TMP_FILE} -C ${DEST_DIR} ${EXTRA_ARGS}
+}
+
+# Check and install jq if needed
+if ! command -v jq >/dev/null 2>&1; then
+    printf "jq not found, downloading... "
+    LOCAL_BIN="$HOME/.local/bin"
+    mkdir -p "$LOCAL_BIN"
+    export PATH="$LOCAL_BIN:$PATH"
+    curl -fsSL "https://github.com/jqlang/jq/releases/latest/download/jq-${JQ_OS}-${JQ_ARCH}" -o "$LOCAL_BIN/jq"
+    chmod +x "$LOCAL_BIN/jq"
+    echo "done."
+fi
+
+# Get COMMIT_ID
+if [ "$FLAVOR" = "CODE" ]; then
+    COMMIT_ID=$(curl -sL "${API_URL}/latest/${CODE_PLATFORM}/stable" | jq -r .version)
+elif [ "$FLAVOR" = "CODIUM" ]; then
+    RELEASE_DATA=$(curl -fsSL "${API_URL}/releases/latest")
+    TAG_NAME=$(echo "$RELEASE_DATA" | tr -d "\n\r" | jq -r '.tag_name')
+    COMMIT_ID=$(curl -fsSL "${API_URL}/git/ref/tags/$TAG_NAME" | jq -r '.object.sha')
+    CODE_CLI_URL=$(echo "$RELEASE_DATA" | tr -d "\n\r" | jq -r '.assets[] | select(.name | test("vscodium-cli-'${CODE_PLATFORM}'-.*.tar.gz$")).browser_download_url')
+    CODE_SERVER_WEB_URL=$(echo "$RELEASE_DATA" | tr -d "\n\r" | jq -r '.assets[] | select(.name | test("vscodium-reh-web-'${CODE_PLATFORM}'-.*.tar.gz$")).browser_download_url')
+fi
+
+echo "Latest $FLAVOR COMMIT_ID: $COMMIT_ID"
+
+# Download Web if not present
+CODE_SERVER_WEB_DIR="${BASE_DIR}/cli/serve-web/${COMMIT_ID}"
+if [ ! -d "$CODE_SERVER_WEB_DIR" ]; then
+    printf "Downloading VS Code Web... "
+    if [ "$FLAVOR" = "CODE" ]; then
+        downloadArchiveToDir "${SERVER_URL_BASE}/commit:${COMMIT_ID}/server-${CODE_PLATFORM}-web/stable" "${CODE_SERVER_WEB_DIR}" "--strip-components 1"
+    elif [ "$FLAVOR" = "CODIUM" ]; then
+        downloadArchiveToDir "${CODE_SERVER_WEB_URL}" "${CODE_SERVER_WEB_DIR}"
+    fi
+    echo "done."
+else
+    echo "VS Code Web already installed."
+fi
+
+# Handle devcontainer
+EXTENSIONS=""
+if [ -n "$DEVCONTAINER_PATH" ]; then
+    if [ -d "$DEVCONTAINER_PATH" ]; then
+        DEVCONTAINER_FILE="${DEVCONTAINER_PATH}/.devcontainer/devcontainer.json"
+    else
+        DEVCONTAINER_FILE="$DEVCONTAINER_PATH"
+    fi
+    if [ -f "$DEVCONTAINER_FILE" ]; then
+        echo "Processing devcontainer.json..."
+        # Extract settings
+        SETTINGS=$(sed 's#//.*##' "$DEVCONTAINER_FILE" | jq '.customizations.vscode.settings // {}')
+        SETTINGS_DIR="${BASE_DIR}-server/data/Machine"
+        mkdir -p "$SETTINGS_DIR"
+        echo "$SETTINGS" > "${SETTINGS_DIR}/settings.json"
+        echo "Settings applied."
+
+        # Extract extensions
+        EXTENSIONS=$(sed 's#//.*##' "$DEVCONTAINER_FILE" | jq -r '.customizations.vscode.extensions // [] | map("--install-extension " + .) | join(" ")')
+    else
+        echo "Devcontainer file not found: $DEVCONTAINER_FILE"
+        exit 1
+    fi
+fi
+
+# Patch workbench.js
+WORKBENCH_JS="${CODE_SERVER_WEB_DIR}/out/vs/code/browser/workbench/workbench.js"
+if [ -f "$WORKBENCH_JS" ]; then
+    sedi 's/default:"welcomePage"/default:"readme"/g' "$WORKBENCH_JS"
+    echo "Workbench patched."
+fi
+
+# Install extensions and/or start server
+CODE_SERVER_BIN="${CODE_SERVER_WEB_DIR}/bin/code-server"
+if [ "$FLAVOR" = "CODIUM" ]; then
+    CODE_SERVER_BIN="${CODE_SERVER_WEB_DIR}/bin/codium-server"  # Adjust if different
+fi
+if [ -n "$EXTENSIONS" ] && [ "$INSTALL_ONLY" -eq 1 ]; then
+    eval "$CODE_SERVER_BIN $EXTENSIONS"
+else
+    exec $CODE_SERVER_BIN $EXTENSIONS --start-server $CODE_SERVER_ARGS
+fi
