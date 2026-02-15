@@ -47,6 +47,6 @@ git clone https://github.com/microsoft/vscode-remote-try-python.git && cd vscode
 cImage=$(sed 's#//.*##' ./.devcontainer/devcontainer.json | jq -r '.image')
 fwPort=$(sed 's#//.*##' ./.devcontainer/devcontainer.json | jq -r '.portsAttributes | keys[0]')
 postCmd=$(sed 's#//.*##' ./.devcontainer/devcontainer.json | jq -r '.postCreateCommand')
-docker run --rm -it -p ${fwPort}:${fwPort} -p 8080:8080 -v "${PWD}:/workspace" -w /workspace \
-${cImage} /bin/bash -c "eval '${postCmd}' && curl -fsSl https://raw.githubusercontent.com/matteosecli/codespeck/main/codespeck | bash -s -- --devcontainer . --port 8080 --default-folder /workspace --accept-server-license-terms --without-connection-token --disable-workspace-trust"
+docker run -u vscode --rm -it -p ${fwPort}:${fwPort} -p 8080:8080 -v "${PWD}:/workspace" -w /workspace \
+${cImage} /bin/bash -c "eval '${postCmd}' && curl -fsSl https://raw.githubusercontent.com/matteosecli/codespeck/refs/heads/main/codespeck | bash -s -- --devcontainer . --port 8080 --host 0.0.0.0 --default-folder /workspace --accept-server-license-terms --without-connection-token --disable-workspace-trust"
 ```
