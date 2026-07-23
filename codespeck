@@ -149,14 +149,14 @@ if [ -n "$DEVCONTAINER_PATH" ]; then
     if [ -f "$DEVCONTAINER_FILE" ]; then
         echo "Processing devcontainer.json..."
         # Extract settings
-        SETTINGS=$(sed 's#//.*##' "$DEVCONTAINER_FILE" | jq '.customizations.vscode.settings // {}')
+        SETTINGS=$(sed '/^[[:space:]]*\/\//d' "$DEVCONTAINER_FILE" | jq '.customizations.vscode.settings // {}')
         SETTINGS_DIR="${BASE_DIR}-server/data/Machine"
         mkdir -p "$SETTINGS_DIR"
         echo "$SETTINGS" > "${SETTINGS_DIR}/settings.json"
         echo "Settings applied."
 
         # Extract extensions
-        EXTENSIONS=$(sed 's#//.*##' "$DEVCONTAINER_FILE" | jq -r '.customizations.vscode.extensions // [] | map("--install-extension " + .) | join(" ")')
+        EXTENSIONS=$(sed '/^[[:space:]]*\/\//d' "$DEVCONTAINER_FILE" | jq -r '.customizations.vscode.extensions // [] | map("--install-extension " + .) | join(" ")')
     else
         echo "Devcontainer file not found: $DEVCONTAINER_FILE"
         exit 1
